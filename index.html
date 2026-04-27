@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Daily Planner</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Planner">
+  <meta name="theme-color" content="#000000">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; background: #000; }
+    body { height: 100%; overflow: hidden; font-family: Georgia, 'Times New Roman', serif; -webkit-text-size-adjust: 100%; }
+    #root { height: 100%; }
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── IndexedDB ─────────────────────────────────────────────────────────────
+    let _db = null;
+    function openDB() {
+      if (_db) return Promise.resolve(_db);
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('DailyPlanner', 1);
+        req.onupgradeneeded = e => e.target.result.createObjectStore('kv');
+        req.onsuccess = e => { _db = e.target.result; resolve(_db); };
+        req.onerror  = () => reject(req.error);
+      });
+    }
+    async function kvSave(key, val) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(val, key);
+        await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+      } catch(e) { console.warn('Save failed', e); }
+    }
+    async function kvLoad(key) {
+      try {
+        const db = await openDB();
+        const tx = db.transaction('kv', 'readonly');
+        const req = tx.objectStore('kv').get(key);
+        return await new Promise(res => { req.onsuccess = () => res(req.result ?? null); req.onerror = () => res(null); });
+      } catch { return null; }
+    }
+
+    // ── PIN ───────────────────────────────────────────────────────────────────
+    async function hashPin(pin) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pin));
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    const addDays   = (d,n) => { const r=new Date(d); r.setDate(r.getDate()+n); return r; };
+    const addMonths = (d,n) => { const r=new Date(d); r.setMonth(r.getMonth()+n); return r; };
+    const isoDate   = d => d.toISOString().split('T')[0];
+    const weekMon   = d => { const r=new Date(d); r.setDate(r.getDate()-((r.getDay()+6)%7)); r.setHours(0,0,0,0); return r; };
+    const sameDay   = (a,b) => isoDate(a)===isoDate(b);
+    const mkRow     = () => ({ id: Math.random().toString(36).slice(2), desc:'', lbs:'', p:'' });
+    const sumRows   = rows => rows.reduce((s,r)=>s+(parseFloat(r.lbs)||0)+(parseFloat(r.p)||0)/100, 0);
+    const fmtMoney  = n => { const s=n<0?'-':'', a=Math.abs(n); return `${s}£${Math.floor(a)}.${String(Math.round((a%1)*100)).padStart(2,'0')}`; };
+
+    const MONTHS     = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const WDAYS      = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    const WDAYS_LONG = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+
+    const C = { black:'#000', white:'#fff', darkGrey:'#333', midGrey:'#888', lightGrey:'#ccc', paleGrey:'#e8e8e8', offWhite:'#f5f5f5' };
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // PIN SCREEN
+    // ══════════════════════════════════════════════════════════════════════════
+    function PinScreen({ mode, onSuccess }) {
+      const [digits,  setDigits]  = useState('');
+      const [confirm, setConfirm] = useState('');
+      const [step,    setStep]    = useState('enter');
+      const [shake,   setShake]   = useState(false);
+      const [error,   setError]   = useState('');
+
+      const press = async d => {
+        if (d==='⌫') { step==='confirm'?setConfirm(c=>c.slice(0,-1)):setDigits(c=>c.slice(0,-1)); return; }
+        if (mode==='setup') {
+          if (step==='enter') {
+            const next=digits+d; setDigits(next);
+            if (next.length===4) setStep('confirm');
+          } else {
+            const next=confirm+d; setConfirm(next);
+            if (next.length===4) {
+              if (next===digits) { await kvSave('pin_hash', await hashPin(next)); onSuccess(); }
+              else { setError("PINs don't match — try again"); setDigits(''); setConfirm(''); setStep('enter'); doShake(); }
+            }
+          }
+        } else {
+          const next=digits+d; setDigits(next);
+          if (next.length===4) {
+            if (await hashPin(next)===await kvLoad('pin_hash')) onSuccess();
+            else { setError('Incorrect PIN'); setDigits(''); doShake(); }
+          }
+        }
+      };
+
+      const doShake = () => { setShake(true); setTimeout(()=>setShake(false),500); };
+      const current = step==='confirm'?confirm:digits;
+      const label   = mode==='setup'?(step==='enter'?'Choose a 4-digit PIN':'Confirm your PIN'):'Enter your PIN';
+
+      return (
+        <div style={{height:'100vh',background:C.black,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:36}}>
+          <div style={{fontFamily:'Georgia,serif',fontSize:22,color:C.white,letterSpacing:1}}>Daily Planner</div>
+          <div style={{textAlign:'center'}}>
+            <div style={{fontSize:13,color:C.midGrey,fontFamily:'sans-serif',marginBottom:22,letterSpacing:0.5}}>{label}</div>
+            <div style={{display:'flex',gap:16,justifyContent:'center',animation:shake?'shake 0.5s ease':'none'}}>
+              {[0,1,2,3].map(i=>(
+                <div key={i} style={{width:14,height:14,borderRadius:'50%',background:i<current.length?C.white:'transparent',border:`1.5px solid ${i<current.length?C.white:C.darkGrey}`,transition:'background 0.15s'}}/>
+              ))}
+            </div>
+            {error&&<div style={{fontSize:12,color:C.lightGrey,fontFamily:'sans-serif',marginTop:12}}>{error}</div>}
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,72px)',gap:12}}>
+            {['1','2','3','4','5','6','7','8','9','','0','⌫'].map((d,i)=>(
+              d===''?<div key={i}/>:
+              <button key={i} onClick={()=>press(d)} style={{width:72,height:72,borderRadius:'50%',background:d==='⌫'?'transparent':C.darkGrey,border:`1px solid ${d==='⌫'?'transparent':C.midGrey}`,color:C.white,fontSize:d==='⌫'?22:24,fontFamily:d==='⌫'?'sans-serif':'Georgia,serif',cursor:'pointer'}}>{d}</button>
+            ))}
+          </div>
+          <style>{`@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}`}</style>
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // APP SHELL
+    // ══════════════════════════════════════════════════════════════════════════
+    function App() {
+      const [screen, setScreen] = useState('loading');
+      useEffect(()=>{ kvLoad('pin_hash').then(h=>setScreen(h?'lock':'setup')); },[]);
+      if (screen==='loading') return <div style={{height:'100vh',background:C.black,display:'flex',alignItems:'center',justifyContent:'center'}}><span style={{color:C.midGrey,fontFamily:'sans-serif',fontSize:14}}>Loading…</span></div>;
+      if (screen==='setup')   return <PinScreen mode="setup" onSuccess={()=>setScreen('app')}/>;
+      if (screen==='lock')    return <PinScreen mode="lock"  onSuccess={()=>setScreen('app')}/>;
+      return <Planner onLock={()=>setScreen('lock')}/>;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // PLANNER
+    // ══════════════════════════════════════════════════════════════════════════
+    function Planner({ onLock }) {
+      const [view,     setView]     = useState('day');
+      const [day,      setDay]      = useState(()=>{ const d=new Date(); d.setHours(0,0,0,0); return d; });
+      const [accMonth, setAccMonth] = useState(()=>{ const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
+      const [sideOpen, setSideOpen] = useState(false);
+      const today    = new Date(); today.setHours(0,0,0,0);
+      const weekDays = WDAYS.map((_,i)=>addDays(weekMon(day),i));
+
+      const navBtn = { background:'transparent', border:`0.5px solid ${C.lightGrey}`, borderRadius:4, padding:'4px 9px', cursor:'pointer', fontSize:16, color:C.black, lineHeight:1 };
+      const sideBtn = active => ({ display:'block', width:'100%', textAlign:'left', background:active?C.black:'transparent', border:'none', borderRadius:4, padding:'8px 10px', cursor:'pointer', fontSize:14, fontFamily:'Georgia,serif', color:active?C.white:C.midGrey, fontWeight:active?500:400, marginBottom:2 });
+
+      return (
+        <div style={{display:'flex',height:'100vh',background:C.white,color:C.black,overflow:'hidden'}}>
+
+          {/* Sidebar */}
+          {sideOpen&&<>
+            <div onClick={()=>setSideOpen(false)} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:10}}/>
+            <aside style={{position:'fixed',top:0,left:0,bottom:0,width:200,background:C.white,borderRight:`1px solid ${C.black}`,zIndex:11,display:'flex',flexDirection:'column',padding:'env(safe-area-inset-top,20px) 12px 20px'}}>
+              <div style={{fontFamily:'Georgia,serif',fontSize:16,fontWeight:500,marginBottom:18,paddingBottom:14,borderBottom:`1px solid ${C.black}`,marginTop:12}}>Daily Planner</div>
+              <button onClick={()=>{const d=new Date();d.setHours(0,0,0,0);setDay(d);setView('day');setSideOpen(false);}} style={sideBtn(false)}>Today</button>
+              <div style={{fontSize:10,color:C.lightGrey,letterSpacing:2,textTransform:'uppercase',margin:'14px 0 5px',fontFamily:'sans-serif'}}>Views</div>
+              <button onClick={()=>{setView('day');setSideOpen(false);}} style={sideBtn(view==='day')}>Daily Pages</button>
+              <button onClick={()=>{setView('accounts');setSideOpen(false);}} style={sideBtn(view==='accounts')}>Accounts</button>
+              <div style={{marginTop:'auto',paddingTop:14,borderTop:`0.5px solid ${C.paleGrey}`}}>
+                <div style={{fontSize:12,color:C.midGrey,fontFamily:'sans-serif',marginBottom:10}}>
+                  <div style={{fontWeight:500,color:C.black,marginBottom:2}}>{WDAYS_LONG[(day.getDay()+6)%7]}</div>
+                  <div>{day.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}</div>
+                </div>
+                <button onClick={onLock} style={{background:'none',border:`0.5px solid ${C.lightGrey}`,borderRadius:4,color:C.midGrey,fontSize:12,fontFamily:'sans-serif',cursor:'pointer',padding:'5px 10px'}}>Lock planner</button>
+              </div>
+            </aside>
+          </>}
+
+          {/* Main */}
+          <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+            {/* Top bar */}
+            <div style={{display:'flex',alignItems:'center',gap:6,padding:'env(safe-area-inset-top,10px) 12px 8px',background:C.white,borderBottom:`1px solid ${C.black}`,flexShrink:0}}>
+              <button onClick={()=>setSideOpen(s=>!s)} style={navBtn}>☰</button>
+              {view==='day'&&<>
+                <button onClick={()=>setDay(d=>{const r=addDays(d,-1);r.setHours(0,0,0,0);return r;})} style={navBtn}>‹</button>
+                <span style={{fontFamily:'Georgia,serif',fontSize:13,flex:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                  {WDAYS_LONG[(day.getDay()+6)%7]}, {day.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'})}
+                  {sameDay(day,today)&&<span style={{marginLeft:8,fontSize:10,fontFamily:'sans-serif',background:C.black,color:C.white,padding:'1px 7px',borderRadius:9}}>today</span>}
+                </span>
+                <button onClick={()=>setDay(d=>{const r=addDays(d,1);r.setHours(0,0,0,0);return r;})} style={navBtn}>›</button>
+                <input type="date" value={isoDate(day)} onChange={e=>{if(!e.target.value)return;const d=new Date(e.target.value+'T12:00:00');d.setHours(0,0,0,0);setDay(d);}} style={{fontFamily:'sans-serif',fontSize:12,padding:'3px 6px',border:`0.5px solid ${C.lightGrey}`,borderRadius:4,background:C.offWhite,color:C.black}}/>
+              </>}
+              {view==='accounts'&&<>
+                <button onClick={()=>setAccMonth(m=>addMonths(m,-1))} style={navBtn}>‹</button>
+                <span style={{fontFamily:'Georgia,serif',fontSize:14,flex:1}}>Accounts — {MONTHS[accMonth.getMonth()]} {accMonth.getFullYear()}</span>
+                <button onClick={()=>setAccMonth(m=>addMonths(m,1))} style={navBtn}>›</button>
+              </>}
+            </div>
+
+            {view==='day'
+              ?<DayView day={day} weekDays={weekDays} today={today} onDaySelect={d=>{d.setHours(0,0,0,0);setDay(d);}}/>
+              :<AccountsView month={accMonth}/>
+            }
+          </div>
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // DAY VIEW
+    // ══════════════════════════════════════════════════════════════════════════
+    function DayView({ day, weekDays, today, onDaySelect }) {
+      const [tool,  setTool]  = useState('text');
+      const [color, setColor] = useState('#000000');
+      const [size,  setSize]  = useState(2);
+      const [notes, setNotes] = useState('');
+      const canvasRef = useRef(null);
+      const ctxRef    = useRef(null);
+      const isDown    = useRef(false);
+      const saveTimer = useRef(null);
+      const dateKey   = 'day_'+isoDate(day);
+
+      useEffect(()=>{
+        const cv=canvasRef.current; if(!cv)return;
+        ctxRef.current?.clearRect(0,0,cv.width,cv.height); setNotes('');
+        kvLoad(dateKey).then(data=>{
+          setNotes(data?.notes||'');
+          if(data?.canvas&&canvasRef.current&&ctxRef.current){
+            const img=new Image(); img.onload=()=>ctxRef.current?.drawImage(img,0,0,canvasRef.current.width,canvasRef.current.height); img.src=data.canvas;
+          }
+        });
+      },[dateKey]);
+
+      useEffect(()=>{
+        const cv=canvasRef.current; if(!cv)return;
+        const init=()=>{
+          const p=cv.parentElement,w=p.offsetWidth,h=p.offsetHeight;
+          if(cv.width===w&&cv.height===h)return;
+          const snap=cv.width>0?cv.toDataURL():null;
+          cv.width=w; cv.height=h;
+          ctxRef.current=cv.getContext('2d'); ctxRef.current.lineCap='round'; ctxRef.current.lineJoin='round';
+          if(snap){const img=new Image();img.onload=()=>ctxRef.current?.drawImage(img,0,0,w,h);img.src=snap;}
+        };
+        init(); const ro=new ResizeObserver(init); ro.observe(cv.parentElement); return()=>ro.disconnect();
+      },[]);
+
+      const scheduleSave=useCallback((txt)=>{
+        clearTimeout(saveTimer.current);
+        saveTimer.current=setTimeout(async()=>{ const canvas=canvasRef.current?.toDataURL('image/jpeg',0.80); await kvSave(dateKey,{notes:txt,canvas}); },800);
+      },[dateKey]);
+
+      const getXY=e=>{ const cv=canvasRef.current,r=cv.getBoundingClientRect(); return{x:(e.clientX-r.left)*(cv.width/r.width),y:(e.clientY-r.top)*(cv.height/r.height),pres:e.pressure>0?e.pressure:0.5}; };
+      const pDown=e=>{ if(tool==='text')return; e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId); isDown.current=true; const{x,y,pres}=getXY(e); const c=ctxRef.current; c.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over'; c.strokeStyle=color; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.beginPath(); c.moveTo(x,y); };
+      const pMove=e=>{ if(!isDown.current)return; e.preventDefault(); const{x,y,pres}=getXY(e); const c=ctxRef.current; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.lineTo(x,y); c.stroke(); c.beginPath(); c.moveTo(x,y); };
+      const pUp=()=>{ if(!isDown.current)return; isDown.current=false; scheduleSave(notes); };
+      const clearDraw=()=>{ const c=ctxRef.current,cv=canvasRef.current; if(c&&cv){c.clearRect(0,0,cv.width,cv.height);scheduleSave(notes);} };
+
+      const toolBtn=active=>({ border:`0.5px solid ${active?C.black:C.lightGrey}`, borderRadius:4, padding:'5px 12px', cursor:'pointer', fontSize:12, background:active?C.black:C.white, color:active?C.white:C.midGrey, fontFamily:'sans-serif' });
+
+      return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
+
+          {/* Week strip */}
+          <div style={{display:'flex',gap:2,padding:'6px 10px',background:C.white,borderBottom:`0.5px solid ${C.lightGrey}`,flexShrink:0}}>
+            {weekDays.map((d,i)=>{
+              const act=sameDay(d,day),isT=sameDay(d,today);
+              return <button key={i} onClick={()=>onDaySelect(new Date(d))} style={{flex:1,padding:'4px 2px',borderRadius:4,border:'none',cursor:'pointer',textAlign:'center',background:act?C.black:C.white,color:act?C.white:isT?C.darkGrey:C.midGrey,fontWeight:act||isT?500:400,fontFamily:'sans-serif'}}>
+                <div style={{fontSize:10,marginBottom:1}}>{WDAYS[i]}</div>
+                <div style={{fontSize:13}}>{d.getDate()}</div>
+              </button>;
+            })}
+          </div>
+
+          {/* Toolbar */}
+          <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 10px',background:C.offWhite,borderBottom:`0.5px solid ${C.lightGrey}`,flexShrink:0,flexWrap:'wrap'}}>
+            {[['text','⌨ Type'],['pen','✎ Draw'],['eraser','◻ Erase']].map(([t,l])=>(
+              <button key={t} onClick={()=>setTool(t)} style={toolBtn(tool===t)}>{l}</button>
+            ))}
+            {tool!=='text'&&<>
+              <span style={{fontSize:11,color:C.lightGrey,fontFamily:'sans-serif'}}>Colour</span>
+              <input type="color" value={color} onChange={e=>setColor(e.target.value)} style={{width:24,height:24,border:`0.5px solid ${C.lightGrey}`,borderRadius:3,cursor:'pointer',padding:0}}/>
+              <span style={{fontSize:11,color:C.lightGrey,fontFamily:'sans-serif'}}>Size {size}</span>
+              <input type="range" min={1} max={24} step={1} value={size} onChange={e=>setSize(+e.target.value)} style={{width:80}}/>
+              <button onClick={clearDraw} style={{marginLeft:'auto',border:`0.5px solid ${C.lightGrey}`,borderRadius:4,padding:'4px 10px',cursor:'pointer',fontSize:11,background:C.white,color:C.darkGrey,fontFamily:'sans-serif'}}>Clear drawing</button>
+            </>}
+            {tool==='text'&&<span style={{fontSize:11,color:C.lightGrey,fontFamily:'sans-serif',marginLeft:4}}>Switch to Draw for Apple Pencil</span>}
+          </div>
+
+          {/* Writing area */}
+          <div style={{flex:1,position:'relative',overflow:'hidden'}}>
+            <div style={{position:'absolute',inset:0,background:C.white,backgroundImage:`repeating-linear-gradient(transparent,transparent 31px,${C.paleGrey} 31px,${C.paleGrey} 32px)`,backgroundPosition:'0 36px',pointerEvents:'none',zIndex:0}}/>
+            <div style={{position:'absolute',top:0,bottom:0,left:52,width:'0.5px',background:C.lightGrey,pointerEvents:'none',zIndex:1}}/>
+            <canvas ref={canvasRef}
+              style={{position:'absolute',inset:0,width:'100%',height:'100%',touchAction:'none',zIndex:tool!=='text'?3:1,pointerEvents:tool==='text'?'none':'auto',cursor:tool==='pen'?'crosshair':tool==='eraser'?'cell':'default'}}
+              onPointerDown={pDown} onPointerMove={pMove} onPointerUp={pUp} onPointerLeave={pUp}/>
+            <textarea value={notes} spellCheck={true}
+              onChange={e=>{setNotes(e.target.value);scheduleSave(e.target.value);}}
+              placeholder={tool==='text'?'Start writing your notes…':''}
+              style={{position:'absolute',inset:0,width:'100%',height:'100%',background:'transparent',border:'none',resize:'none',outline:'none',fontFamily:"Georgia,'Times New Roman',serif",fontSize:16,lineHeight:'32px',padding:'4px 20px 40px 60px',color:C.black,boxSizing:'border-box',zIndex:tool==='text'?4:0,pointerEvents:tool==='text'?'auto':'none'}}/>
+          </div>
+        </div>
+      );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ACCOUNTS VIEW
+    // ══════════════════════════════════════════════════════════════════════════
+    function AccountsView({ month }) {
+      const [data, setData] = useState({paid:[mkRow()],received:[mkRow()]});
+      const mk='acc_'+month.toISOString().slice(0,7);
+      useEffect(()=>{ kvLoad(mk).then(d=>setData(d||{paid:[mkRow()],received:[mkRow()]})); },[mk]);
+      const save=useCallback(async nd=>{ await kvSave(mk,nd); },[mk]);
+      const upd=(s,rows)=>{ const nd={...data,[s]:rows}; setData(nd); save(nd); };
+      const totalPaid=sumRows(data.paid), totalRec=sumRows(data.received), bal=totalRec-totalPaid;
+
+      return (
+        <div style={{display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
+          <div style={{display:'flex',gap:20,padding:'9px 16px',background:C.offWhite,borderBottom:`0.5px solid ${C.lightGrey}`,flexShrink:0,fontFamily:"'Courier New',monospace",fontSize:13,flexWrap:'wrap',alignItems:'center'}}>
+            <span>Received: <strong>{fmtMoney(totalRec)}</strong></span>
+            <span>Paid out: <strong>{fmtMoney(totalPaid)}</strong></span>
+            <span style={{marginLeft:'auto'}}>Balance: <strong style={{fontSize:14,textDecoration:bal<0?'underline':'none'}}>{fmtMoney(bal)}</strong></span>
+          </div>
+          <div style={{flex:1,overflow:'auto',padding:14,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))',gap:14,alignContent:'start'}}>
+            <AccTable label="PAID — Outgoings" rows={data.paid}
+              onAdd={()=>upd('paid',[...data.paid,mkRow()])}
+              onDel={id=>upd('paid',data.paid.filter(r=>r.id!==id))}
+              onEdit={(id,f,v)=>upd('paid',data.paid.map(r=>r.id===id?{...r,[f]:v}:r))}
+              total={totalPaid}/>
+            <AccTable label="RECEIVED — Income" rows={data.received}
+              onAdd={()=>upd('received',[...data.received,mkRow()])}
+              onDel={id=>upd('received',data.received.filter(r=>r.id!==id))}
+              onEdit={(id,f,v)=>upd('received',data.received.map(r=>r.id===id?{...r,[f]:v}:r))}
+              total={totalRec}/>
+          </div>
+        </div>
+      );
+    }
+
+    function AccTable({ label, rows, onAdd, onDel, onEdit, total }) {
+      const ci=right=>({width:'100%',border:'none',background:'transparent',fontFamily:right?"'Courier New',monospace":'Georgia,serif',fontSize:13,padding:'5px 6px',outline:'none',color:C.black,textAlign:right?'right':'left'});
+      return (
+        <div style={{border:`1px solid ${C.black}`,borderRadius:4,overflow:'hidden',display:'flex',flexDirection:'column',background:C.white}}>
+          <div style={{background:C.black,color:C.white,padding:'8px 12px',fontFamily:'Georgia,serif',fontSize:13,fontWeight:500,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span>{label}</span>
+            <span style={{fontFamily:"'Courier New',monospace"}}>{fmtMoney(total)}</span>
+          </div>
+          <table style={{width:'100%',borderCollapse:'collapse',tableLayout:'fixed'}}>
+            <colgroup><col style={{width:'53%'}}/><col style={{width:'19%'}}/><col style={{width:'18%'}}/><col style={{width:'10%'}}/></colgroup>
+            <thead><tr style={{background:C.offWhite}}>
+              {['Description','£','p',''].map((h,i)=>(
+                <th key={i} style={{padding:'5px 8px',fontSize:10,fontFamily:'sans-serif',fontWeight:600,color:C.midGrey,textAlign:i>0?'right':'left',letterSpacing:1,textTransform:'uppercase',borderBottom:`0.5px solid ${C.lightGrey}`}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rows.map(row=>(
+                <tr key={row.id} style={{borderBottom:`0.5px solid ${C.paleGrey}`}}>
+                  <td style={{padding:'2px 4px'}}><input value={row.desc} onChange={e=>onEdit(row.id,'desc',e.target.value)} placeholder="Description…" spellCheck={true} style={ci(false)}/></td>
+                  <td style={{padding:'2px 4px'}}><input value={row.lbs} onChange={e=>onEdit(row.id,'lbs',e.target.value)} type="number" min="0" placeholder="0" style={ci(true)}/></td>
+                  <td style={{padding:'2px 4px'}}><input value={row.p} onChange={e=>onEdit(row.id,'p',e.target.value)} type="number" min="0" max="99" placeholder="00" style={ci(true)}/></td>
+                  <td style={{padding:'2px 4px',textAlign:'center'}}><button onClick={()=>onDel(row.id)} style={{background:'none',border:'none',cursor:'pointer',color:C.lightGrey,fontSize:14,padding:2}}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button onClick={onAdd}
+            style={{background:C.white,border:'none',borderTop:`0.5px dashed ${C.lightGrey}`,padding:'8px 12px',cursor:'pointer',color:C.midGrey,fontSize:13,fontFamily:'sans-serif',textAlign:'left'}}
+            onMouseOver={e=>e.currentTarget.style.background=C.offWhite}
+            onMouseOut={e=>e.currentTarget.style.background=C.white}>
+            + Add row
+          </button>
+        </div>
+      );
+    }
+
+    // ── Service worker & boot ─────────────────────────────────────────────────
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./sw.js').catch(e=>console.log('SW:',e)); });
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
