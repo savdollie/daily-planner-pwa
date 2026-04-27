@@ -1,4 +1,4 @@
-const CACHE = 'planner-v2';
+const CACHE = 'planner-v3';
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -27,3 +27,4 @@ self.addEventListener('fetch', e => {
     caches.match(e.request).then(r => r || fetch(e.request).catch(() => caches.match(self.registration.scope)))
   );
 });
+
