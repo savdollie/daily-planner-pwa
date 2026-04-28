@@ -255,8 +255,17 @@ function Planner({ onLock }) {
 // ════════════════════════════════════════════════════════════════════════════
 function DayView({ day, weekDays, today, onDaySelect }) {
   const [notes, setNotes] = useState('');
-  const saveTimer = useRef(null);
-  const dateKey   = 'day_'+isoDate(day);
+  const saveTimer   = useRef(null);
+  const textareaRef = useRef(null);
+  const dateKey     = 'day_'+isoDate(day);
+
+  // Force full keyboard — blur then refocus tricks iOS into showing full keyboard
+  const forceKeyboard = useCallback(()=>{
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.blur();
+    setTimeout(()=>{ ta.focus(); },50);
+  },[]);
 
   // Load notes for this day
   useEffect(()=>{
@@ -284,8 +293,8 @@ function DayView({ day, weekDays, today, onDaySelect }) {
   return (
     <div style={{display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
 
-      {/* Week strip */}
-      <div style={{display:'flex',gap:2,padding:'6px 10px',background:'#fff',borderBottom:'0.5px solid #ccc',flexShrink:0}}>
+      {/* Week strip + keyboard button */}
+      <div style={{display:'flex',gap:2,padding:'6px 10px',background:'#fff',borderBottom:'0.5px solid #ccc',flexShrink:0,alignItems:'center'}}>
         {weekDays.map((d,i)=>{
           const act=sameDay(d,day),isT=sameDay(d,today);
           return <button key={i} onClick={()=>onDaySelect(new Date(d))} style={{flex:1,padding:'5px 2px',borderRadius:4,border:'none',cursor:'pointer',textAlign:'center',background:act?'#000':'#fff',color:act?'#fff':isT?'#333':'#888',fontWeight:act||isT?500:400,fontFamily:'sans-serif'}}>
@@ -293,11 +302,18 @@ function DayView({ day, weekDays, today, onDaySelect }) {
             <div style={{fontSize:14}}>{d.getDate()}</div>
           </button>;
         })}
+        <button
+          onClick={forceKeyboard}
+          title="Show full keyboard"
+          style={{flexShrink:0,marginLeft:6,background:'#000',border:'none',borderRadius:6,padding:'6px 10px',cursor:'pointer',color:'#fff',fontSize:13,fontFamily:'sans-serif',whiteSpace:'nowrap'}}>
+          ⌨
+        </button>
       </div>
 
       {/* Clean white writing area — textarea lets iOS handle everything natively */}
       {/* Finger tap = keyboard, Apple Pencil = Scribble handwriting to text    */}
       <textarea
+        ref={textareaRef}
         value={notes}
         onChange={handleChange}
         spellCheck={true}
@@ -425,3 +441,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
 </html>
+
