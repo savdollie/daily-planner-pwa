@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -335,6 +337,39 @@
         scheduleSave(txt);
       },[scheduleSave]);
 
+      // Touch handling — quick tap places cursor silently, long press shows menu
+      const touchStartTime = useRef(0);
+      const touchStartX    = useRef(0);
+      const touchStartY    = useRef(0);
+
+      const handleTouchStart = useCallback(e => {
+        touchStartTime.current = Date.now();
+        const t = e.touches[0];
+        touchStartX.current = t.clientX;
+        touchStartY.current = t.clientY;
+      },[]);
+
+      const handleTouchEnd = useCallback(e => {
+        const elapsed = Date.now() - touchStartTime.current;
+        const t = e.changedTouches[0];
+        const dx = Math.abs(t.clientX - touchStartX.current);
+        const dy = Math.abs(t.clientY - touchStartY.current);
+        // Quick tap (under 300ms, minimal movement) — place cursor, suppress menu
+        if (elapsed < 300 && dx < 10 && dy < 10) {
+          e.preventDefault();
+          const range = document.caretRangeFromPoint
+            ? document.caretRangeFromPoint(t.clientX, t.clientY)
+            : null;
+          if (range) {
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          editRef.current?.focus();
+        }
+        // Long press — allow default so paste menu appears naturally
+      },[]);
+
       const getXY=e=>{ const cv=canvasRef.current,r=cv.getBoundingClientRect(); return{x:(e.clientX-r.left)*(cv.width/r.width),y:(e.clientY-r.top)*(cv.height/r.height),pres:e.pressure>0?e.pressure:0.5}; };
       const pDown=e=>{ if(tool==='text')return; if(e.pointerType==='touch')return; e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId); isDown.current=true; const{x,y,pres}=getXY(e); const c=ctxRef.current; c.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over'; c.strokeStyle=color; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.beginPath(); c.moveTo(x,y); };
       const pMove=e=>{ if(!isDown.current)return; if(e.pointerType==='touch')return; e.preventDefault(); const{x,y,pres}=getXY(e); const c=ctxRef.current; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.lineTo(x,y); c.stroke(); c.beginPath(); c.moveTo(x,y); };
@@ -386,6 +421,8 @@
               suppressContentEditableWarning={true}
               spellCheck={true}
               onInput={handleInput}
+              onTouchStart={handleTouchStart}
+              onTouchEnd={handleTouchEnd}
               data-placeholder="Start writing your notes…"
               style={{position:'absolute',inset:0,width:'100%',height:'100%',background:'transparent',border:'none',resize:'none',outline:'none',fontFamily:"Georgia,'Times New Roman',serif",fontSize:18,lineHeight:'40px',padding:'4px 20px 40px 60px',color:C.black,boxSizing:'border-box',zIndex:tool==='text'?4:0,pointerEvents:tool==='text'?'auto':'none',overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word',WebkitUserSelect:tool==='text'?'text':'none'}}
             />
@@ -472,4 +509,3 @@
   </script>
 </body>
 </html>
-
