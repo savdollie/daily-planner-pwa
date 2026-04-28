@@ -259,12 +259,21 @@ function DayView({ day, weekDays, today, onDaySelect }) {
   const textareaRef = useRef(null);
   const dateKey     = 'day_'+isoDate(day);
 
-  // Force full keyboard — blur then refocus tricks iOS into showing full keyboard
+  // Force full keyboard — temp input trick resets iOS pencil mode completely
   const forceKeyboard = useCallback(()=>{
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.blur();
-    setTimeout(()=>{ ta.focus(); },50);
+    // Create a temporary text input to reset iOS input device tracking
+    const tmp = document.createElement('input');
+    tmp.setAttribute('type','text');
+    tmp.setAttribute('inputmode','text');
+    tmp.style.cssText = 'position:fixed;top:50%;left:50%;width:10px;height:10px;opacity:0.01;z-index:9999;border:none;outline:none;';
+    document.body.appendChild(tmp);
+    tmp.focus();
+    setTimeout(()=>{
+      ta.focus();
+      document.body.removeChild(tmp);
+    }, 80);
   },[]);
 
   // Load notes for this day
@@ -317,6 +326,7 @@ function DayView({ day, weekDays, today, onDaySelect }) {
         value={notes}
         onChange={handleChange}
         spellCheck={true}
+        inputMode="text"
         placeholder="Tap to type  ·  Write with Apple Pencil to use Scribble"
         style={{
           flex:1,
@@ -441,4 +451,3 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
 </html>
-
