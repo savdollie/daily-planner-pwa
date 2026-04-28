@@ -294,6 +294,23 @@
         init(); const ro=new ResizeObserver(init); ro.observe(cv.parentElement); return()=>ro.disconnect();
       },[]);
 
+      // Redraw canvas when app returns from background (iOS clears canvas on suspend)
+      useEffect(()=>{
+        const onVisible = () => {
+          if(document.visibilityState==='visible'){
+            kvLoad(dateKey).then(data=>{
+              if(data?.canvas&&canvasRef.current&&ctxRef.current){
+                const cv=canvasRef.current;
+                ctxRef.current.clearRect(0,0,cv.width,cv.height);
+                const img=new Image(); img.onload=()=>ctxRef.current?.drawImage(img,0,0,cv.width,cv.height); img.src=data.canvas;
+              }
+            });
+          }
+        };
+        document.addEventListener('visibilitychange',onVisible);
+        return()=>document.removeEventListener('visibilitychange',onVisible);
+      },[dateKey]);
+
       const scheduleSave=useCallback((txt)=>{
         clearTimeout(saveTimer.current);
         saveTimer.current=setTimeout(async()=>{ const canvas=canvasRef.current?.toDataURL('image/jpeg',0.80); await kvSave(dateKey,{notes:txt,canvas}); },800);
