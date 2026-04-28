@@ -270,29 +270,36 @@
       const [color, setColor] = useState('#000000');
       const [size,  setSize]  = useState(2);
       const notesRef  = useRef('');
-      const editRef   = useRef(null);
       const canvasRef = useRef(null);
       const ctxRef    = useRef(null);
       const isDown    = useRef(false);
       const saveTimer = useRef(null);
+      const textareaRef = useRef(null);
       const dateKey   = 'day_'+isoDate(day);
 
-      // Load day data — set contenteditable directly to avoid React cursor fighting
+      // Auto-switch tool based on input device
+      const handlePointerDownArea = useCallback(e => {
+        if (e.pointerType === 'pen')   setTool('pen');
+        if (e.pointerType === 'touch') setTool('text');
+      },[]);
+
+      // Load day data
       useEffect(()=>{
         const cv=canvasRef.current; if(!cv)return;
         ctxRef.current?.clearRect(0,0,cv.width,cv.height);
         notesRef.current='';
-        if(editRef.current) editRef.current.textContent='';
+        if(textareaRef.current) textareaRef.current.value='';
         kvLoad(dateKey).then(data=>{
           const txt=data?.notes||'';
           notesRef.current=txt;
-          if(editRef.current) editRef.current.textContent=txt;
+          if(textareaRef.current) textareaRef.current.value=txt;
           if(data?.canvas&&canvasRef.current&&ctxRef.current){
             const img=new Image(); img.onload=()=>ctxRef.current?.drawImage(img,0,0,canvasRef.current.width,canvasRef.current.height); img.src=data.canvas;
           }
         });
       },[dateKey]);
 
+      // Canvas sizing
       useEffect(()=>{
         const cv=canvasRef.current; if(!cv)return;
         const init=()=>{
@@ -306,9 +313,9 @@
         init(); const ro=new ResizeObserver(init); ro.observe(cv.parentElement); return()=>ro.disconnect();
       },[]);
 
-      // Redraw canvas when app returns from background (iOS clears canvas on suspend)
+      // Redraw canvas when returning from background
       useEffect(()=>{
-        const onVisible = () => {
+        const onVisible=()=>{
           if(document.visibilityState==='visible'){
             kvLoad(dateKey).then(data=>{
               if(data?.canvas&&canvasRef.current&&ctxRef.current){
@@ -325,51 +332,19 @@
 
       const scheduleSave=useCallback((txt)=>{
         clearTimeout(saveTimer.current);
-        saveTimer.current=setTimeout(async()=>{ const canvas=canvasRef.current?.toDataURL('image/jpeg',0.80); await kvSave(dateKey,{notes:txt,canvas}); },800);
+        saveTimer.current=setTimeout(async()=>{
+          const canvas=canvasRef.current?.toDataURL('image/jpeg',0.80);
+          await kvSave(dateKey,{notes:txt,canvas});
+        },800);
       },[dateKey]);
 
-      // contentEditable input handler
-      const handleInput=useCallback(()=>{
-        const txt=editRef.current?.textContent||'';
-        notesRef.current=txt;
-        scheduleSave(txt);
+      const handleChange=useCallback(e=>{
+        notesRef.current=e.target.value;
+        scheduleSave(e.target.value);
       },[scheduleSave]);
 
-      // Touch handling — quick tap places cursor silently, long press shows menu
-      const touchStartTime = useRef(0);
-      const touchStartX    = useRef(0);
-      const touchStartY    = useRef(0);
-
-      const handleTouchStart = useCallback(e => {
-        touchStartTime.current = Date.now();
-        const t = e.touches[0];
-        touchStartX.current = t.clientX;
-        touchStartY.current = t.clientY;
-      },[]);
-
-      const handleTouchEnd = useCallback(e => {
-        const elapsed = Date.now() - touchStartTime.current;
-        const t = e.changedTouches[0];
-        const dx = Math.abs(t.clientX - touchStartX.current);
-        const dy = Math.abs(t.clientY - touchStartY.current);
-        // Quick tap (under 300ms, minimal movement) — place cursor, suppress menu
-        if (elapsed < 300 && dx < 10 && dy < 10) {
-          e.preventDefault();
-          const range = document.caretRangeFromPoint
-            ? document.caretRangeFromPoint(t.clientX, t.clientY)
-            : null;
-          if (range) {
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-          }
-          editRef.current?.focus();
-        }
-        // Long press — allow default so paste menu appears naturally
-      },[]);
-
       const getXY=e=>{ const cv=canvasRef.current,r=cv.getBoundingClientRect(); return{x:(e.clientX-r.left)*(cv.width/r.width),y:(e.clientY-r.top)*(cv.height/r.height),pres:e.pressure>0?e.pressure:0.5}; };
-      const pDown=e=>{ if(tool==='text')return; if(e.pointerType==='touch')return; e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId); isDown.current=true; const{x,y,pres}=getXY(e); const c=ctxRef.current; c.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over'; c.strokeStyle=color; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.beginPath(); c.moveTo(x,y); };
+      const pDown=e=>{ if(e.pointerType==='touch')return; e.preventDefault(); canvasRef.current.setPointerCapture(e.pointerId); isDown.current=true; const{x,y,pres}=getXY(e); const c=ctxRef.current; c.globalCompositeOperation=tool==='eraser'?'destination-out':'source-over'; c.strokeStyle=color; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.beginPath(); c.moveTo(x,y); };
       const pMove=e=>{ if(!isDown.current)return; if(e.pointerType==='touch')return; e.preventDefault(); const{x,y,pres}=getXY(e); const c=ctxRef.current; c.lineWidth=tool==='eraser'?size*6:Math.max(0.5,size*pres*1.8); c.lineTo(x,y); c.stroke(); c.beginPath(); c.moveTo(x,y); };
       const pUp=()=>{ if(!isDown.current)return; isDown.current=false; scheduleSave(notesRef.current); };
       const clearDraw=()=>{ const c=ctxRef.current,cv=canvasRef.current; if(c&&cv){c.clearRect(0,0,cv.width,cv.height);scheduleSave(notesRef.current);} };
@@ -390,7 +365,7 @@
             })}
           </div>
 
-          {/* Toolbar */}
+          {/* Toolbar — auto mode shown, manual override still available */}
           <div style={{display:'flex',alignItems:'center',gap:6,padding:'6px 10px',background:C.offWhite,borderBottom:`0.5px solid ${C.lightGrey}`,flexShrink:0,flexWrap:'wrap'}}>
             {[['text','⌨ Type'],['pen','✎ Draw'],['eraser','◻ Erase']].map(([t,l])=>(
               <button key={t} onClick={()=>setTool(t)} style={toolBtn(tool===t)}>{l}</button>
@@ -402,27 +377,35 @@
               <input type="range" min={1} max={24} step={1} value={size} onChange={e=>setSize(+e.target.value)} style={{width:80}}/>
               <button onClick={clearDraw} style={{marginLeft:'auto',border:`0.5px solid ${C.lightGrey}`,borderRadius:4,padding:'4px 10px',cursor:'pointer',fontSize:11,background:C.white,color:C.darkGrey,fontFamily:'sans-serif'}}>Clear drawing</button>
             </>}
-            {tool==='text'&&<span style={{fontSize:11,color:C.lightGrey,fontFamily:'sans-serif',marginLeft:4}}>Switch to Draw for Apple Pencil</span>}
+            {tool==='text'&&<span style={{fontSize:11,color:C.lightGrey,fontFamily:'sans-serif',marginLeft:4}}>Pencil = draw · Finger = type</span>}
           </div>
 
-          {/* Writing area */}
-          <div style={{flex:1,position:'relative',overflow:'hidden'}}>
+          {/* Writing area — pointer detection switches mode automatically */}
+          <div style={{flex:1,position:'relative',overflow:'hidden'}} onPointerDown={handlePointerDownArea}>
+            {/* Ruled lines */}
             <div style={{position:'absolute',inset:0,background:C.white,backgroundImage:`repeating-linear-gradient(transparent,transparent 39px,${C.paleGrey} 39px,${C.paleGrey} 40px)`,backgroundPosition:'0 44px',pointerEvents:'none',zIndex:0}}/>
+            {/* Margin line */}
             <div style={{position:'absolute',top:0,bottom:0,left:52,width:'0.5px',background:C.lightGrey,pointerEvents:'none',zIndex:1}}/>
-            {tool!=='text' && <canvas ref={canvasRef}
-              style={{position:'absolute',inset:0,width:'100%',height:'100%',touchAction:'none',zIndex:3,cursor:tool==='pen'?'crosshair':'cell'}}
-              onPointerDown={pDown} onPointerMove={pMove} onPointerUp={pUp} onPointerLeave={pUp}/>}
-            {tool==='text' && <canvas ref={canvasRef} style={{position:'absolute',visibility:'hidden',pointerEvents:'none',zIndex:0}}/>}
-            <div
-              ref={editRef}
-              contentEditable={tool==='text'}
-              suppressContentEditableWarning={true}
+            {/* Canvas — always in DOM for sizing, only interactive when drawing */}
+            <canvas ref={canvasRef}
+              style={{position:'absolute',inset:0,width:'100%',height:'100%',touchAction:'none',zIndex:tool!=='text'?3:1,pointerEvents:tool==='text'?'none':'auto',cursor:tool==='pen'?'crosshair':'cell'}}
+              onPointerDown={pDown} onPointerMove={pMove} onPointerUp={pUp} onPointerLeave={pUp}/>
+            {/* Textarea — native iOS text handling, long press = paste menu, double tap = select word */}
+            <textarea
+              ref={textareaRef}
               spellCheck={true}
-              onInput={handleInput}
-              onTouchStart={handleTouchStart}
-              onTouchEnd={handleTouchEnd}
-              data-placeholder="Start writing your notes…"
-              style={{position:'absolute',inset:0,width:'100%',height:'100%',background:'transparent',border:'none',resize:'none',outline:'none',fontFamily:"Georgia,'Times New Roman',serif",fontSize:18,lineHeight:'40px',padding:'4px 20px 40px 60px',color:C.black,boxSizing:'border-box',zIndex:tool==='text'?4:0,pointerEvents:tool==='text'?'auto':'none',overflowY:'auto',whiteSpace:'pre-wrap',wordBreak:'break-word',WebkitUserSelect:tool==='text'?'text':'none'}}
+              onChange={handleChange}
+              placeholder={tool==='text'?'Tap to start writing…':''}
+              style={{
+                position:'absolute',inset:0,width:'100%',height:'100%',
+                background:'transparent',border:'none',resize:'none',outline:'none',
+                fontFamily:"Georgia,'Times New Roman',serif",fontSize:18,lineHeight:'40px',
+                padding:'4px 20px 40px 60px',color:C.black,boxSizing:'border-box',
+                zIndex:tool==='text'?4:0,
+                pointerEvents:tool==='text'?'auto':'none',
+                WebkitTouchCallout:'default',
+                WebkitUserSelect:'text',
+              }}
             />
           </div>
         </div>
