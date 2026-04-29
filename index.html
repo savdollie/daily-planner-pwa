@@ -202,6 +202,7 @@ function Planner({ onLock }) {
           <div style={{fontSize:10,color:'#ccc',letterSpacing:2,textTransform:'uppercase',margin:'14px 0 5px',fontFamily:'sans-serif'}}>Views</div>
           <button onClick={()=>{setView('day');setSideOpen(false);}} style={sideBtn(view==='day')}>Daily Pages</button>
           <button onClick={()=>{setView('accounts');setSideOpen(false);}} style={sideBtn(view==='accounts')}>Accounts</button>
+          <button onClick={()=>{setView('notes');setSideOpen(false);}} style={sideBtn(view==='notes')}>General Notes</button>
           <div style={{marginTop:'auto',paddingTop:14,borderTop:'0.5px solid #e8e8e8'}}>
             <div style={{fontSize:12,color:'#888',fontFamily:'sans-serif',marginBottom:12}}>
               <div style={{fontWeight:500,color:'#000',marginBottom:2}}>{WDAYS_LONG[(day.getDay()+6)%7]}</div>
@@ -239,12 +240,12 @@ function Planner({ onLock }) {
             <span style={{fontFamily:'Georgia,serif',fontSize:14,flex:1}}>Accounts — {MONTHS[accMonth.getMonth()]} {accMonth.getFullYear()}</span>
             <button onClick={()=>setAccMonth(m=>addMonths(m,1))} style={navBtn}>›</button>
           </>}
+          {view==='notes'&&<span style={{fontFamily:'Georgia,serif',fontSize:14,flex:1}}>General Notes</span>}
         </div>
 
-        {view==='day'
-          ?<DayView day={day} weekDays={weekDays} today={today} onDaySelect={d=>{d.setHours(0,0,0,0);setDay(d);}}/>
-          :<AccountsView month={accMonth}/>
-        }
+        {view==='day' && <DayView day={day} weekDays={weekDays} today={today} onDaySelect={d=>{d.setHours(0,0,0,0);setDay(d);}}/>}
+        {view==='accounts' && <AccountsView month={accMonth}/>}
+        {view==='notes' && <GeneralNotes/>}
       </div>
     </div>
   );
@@ -437,6 +438,65 @@ function AccountsView({ month }) {
           <button onClick={()=>upd('received',[...data.received,mkRow()])} style={{background:'#fff',border:'none',borderTop:'0.5px dashed #ccc',padding:'8px 12px',cursor:'pointer',color:'#888',fontSize:13,fontFamily:'sans-serif',textAlign:'left',width:'100%'}}>+ Add row</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// GENERAL NOTES — permanent notes not tied to any day
+// ════════════════════════════════════════════════════════════════════════════
+function GeneralNotes() {
+  const [notes, setNotes] = useState('');
+  const saveTimer = useRef(null);
+
+  useEffect(()=>{
+    kvLoad('general_notes').then(d=>setNotes(d?.notes||''));
+  },[]);
+
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(document.visibilityState==='visible'){
+        kvLoad('general_notes').then(d=>setNotes(d?.notes||''));
+      }
+    };
+    document.addEventListener('visibilitychange',onVisible);
+    return()=>document.removeEventListener('visibilitychange',onVisible);
+  },[]);
+
+  const handleChange = useCallback(e=>{
+    setNotes(e.target.value);
+    clearTimeout(saveTimer.current);
+    saveTimer.current=setTimeout(()=>kvSave('general_notes',{notes:e.target.value}),800);
+  },[]);
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
+      <div style={{padding:'10px 16px',background:'#f5f5f5',borderBottom:'0.5px solid #ccc',flexShrink:0,fontFamily:'sans-serif',fontSize:12,color:'#888'}}>
+        Notes saved here are permanent and not linked to any date
+      </div>
+      <textarea
+        value={notes}
+        onChange={handleChange}
+        spellCheck={true}
+        inputMode="text"
+        placeholder="Tap to type  ·  Write with Apple Pencil to use Scribble"
+        style={{
+          flex:1,
+          width:'100%',
+          background:'#fff',
+          border:'none',
+          resize:'none',
+          outline:'none',
+          fontFamily:"Georgia,'Times New Roman',serif",
+          fontSize:18,
+          lineHeight:'1.7',
+          padding:'16px 20px 40px 20px',
+          color:'#000',
+          boxSizing:'border-box',
+          WebkitUserSelect:'text',
+          userSelect:'text',
+        }}
+      />
     </div>
   );
 }
